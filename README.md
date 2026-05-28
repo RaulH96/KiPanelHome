@@ -81,6 +81,52 @@ Sintaxis `archivo.kicad_pcb:N` indica N copias de esa PCB.
 4. **Ver SVG ↗** o **Ver PDF ↗** para previsualizar
 5. **Generar** para guardar los archivos finales
 
+### Guía visual
+
+**PCB de ejemplo** — placa breakout CC1101 usada en las pruebas:
+
+![PCB de ejemplo](Images/pcbejemp.png)
+
+**Paso 1 — Agregar PCBs:** haz clic en *Add…* y selecciona tus archivos `.kicad_pcb`. Ajusta el número de copias con *Edit copies…*
+
+![Paso 1 - Seleccionar PCBs](Images/sec1selectpcb.png)
+
+**Paso 2 — Método de fabricación:** elige Toner Transfer, UV Film o Custom. El espejado correcto se aplica automáticamente.
+
+![Paso 2 - Método Toner Transfer](Images/sec2selectmagnu.png)
+
+Con UV Film aparecen opciones de convención de contacto (A/B) y modo negativo para fotorresist negativo:
+
+![Paso 2 - Método UV Film](Images/methoduv.png)
+
+**Paso 3 — Capas:** activa las capas que quieras imprimir (F.Cu, B.Cu, Mask, SilkS…). La columna *Mirrored* se actualiza sola según el método.
+
+![Paso 3 - Capas](Images/sec3selectlayer.png)
+
+**Paso 4 — Hoja:** elige tamaño (A4/A3/Carta/Custom), margen perimetral y separación entre placas.
+
+![Paso 4 - Hoja](Images/sec5selecsheet.png)
+
+**Paso 5 — Salida:** elige formato (PDF/SVG/PNG), carpeta de destino y haz clic en *Preview SVG/PDF* o *Generate*.
+
+![Paso 5 - Salida y botones](Images/sec6output.png)
+
+#### Ejemplos de salida
+
+**3 copias · Film UV · F.Cu + B.Cu + F.Mask · Modo negativo** (trazas blancas sobre fondo negro):
+
+![Ejemplo UV Film negativo](Images/example3copUVFILMFCUBCUFMASK.png)
+
+**6 copias — efecto de la opción "Allow PCB rotation":**
+
+Sin rotación:
+
+![6 copias sin rotación](Images/example6copnorotate.png)
+
+Con rotación (mejor aprovechamiento de la hoja):
+
+![6 copias con rotación](Images/example6coprotate.png)
+
 ## Conversión PDF/PNG — por plataforma
 
 | Plataforma | Opción automática | Alternativa |
@@ -218,6 +264,52 @@ Syntax `file.kicad_pcb:N` means N copies of that PCB.
    - Output format (PDF / SVG / PNG)
 4. **Preview SVG ↗** or **Preview PDF ↗** to preview
 5. **Generate** to save the final files
+
+### Visual guide
+
+**Example PCB** — CC1101 breakout board used for testing:
+
+![Example PCB](Images/pcbejemp.png)
+
+**Step 1 — Add PCBs:** click *Add…* and select your `.kicad_pcb` files. Adjust copy count with *Edit copies…*
+
+![Step 1 - Select PCBs](Images/sec1selectpcb.png)
+
+**Step 2 — Manufacturing method:** choose Toner Transfer, UV Film, or Custom. Correct mirroring is applied automatically.
+
+![Step 2 - Toner Transfer method](Images/sec2selectmagnu.png)
+
+With UV Film, contact convention (A/B) and negative mode options appear:
+
+![Step 2 - UV Film method](Images/methoduv.png)
+
+**Step 3 — Layers:** enable the layers you want to print (F.Cu, B.Cu, Mask, SilkS…). The *Mirrored* column updates automatically based on the chosen method.
+
+![Step 3 - Layers](Images/sec3selectlayer.png)
+
+**Step 4 — Sheet:** choose size (A4/A3/Letter/Custom), perimeter margin, and spacing between boards.
+
+![Step 4 - Sheet](Images/sec5selecsheet.png)
+
+**Step 5 — Output:** choose format (PDF/SVG/PNG), output folder, then click *Preview SVG/PDF* or *Generate*.
+
+![Step 5 - Output and buttons](Images/sec6output.png)
+
+#### Output examples
+
+**3 copies · UV Film · F.Cu + B.Cu + F.Mask · Negative mode** (white traces on black background):
+
+![UV Film negative example](Images/example3copUVFILMFCUBCUFMASK.png)
+
+**6 copies — effect of "Allow PCB rotation":**
+
+Without rotation:
+
+![6 copies without rotation](Images/example6copnorotate.png)
+
+With rotation (better sheet utilization):
+
+![6 copies with rotation](Images/example6coprotate.png)
 
 ## PDF/PNG conversion — by platform
 
