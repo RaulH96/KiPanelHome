@@ -1,0 +1,15 @@
+# Dependencias principales
+rectpack>=0.2.2   # bin-packing 2D
+lxml>=4.9.0       # composición y manipulación de SVG
+
+# Interfaz gráfica
+# wxPython ya viene con KiCad. Solo necesario si usas la UI fuera del plugin:
+#   pip install wxPython
+wxPython>=4.2.0
+
+# Conversión PDF/PNG (opcional — alternativa a Edge/Chrome/Inkscape headless)
+# En Linux/Mac es la opción más sencilla. En Windows requiere libcairo nativa.
+#   pip install cairosvg
+# cairosvg>=2.7.0
+
+# Nota: pcbnew viene con KiCad, no se instala con pip.

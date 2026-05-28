@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Salida generada por la herramienta
+output/
+kipanel_output/
+/tests/fixtures/output/
+/tests/fixtures/*.svg
+
+# KiCad
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*.kicad_prl
+fp-info-cache
+*.lck
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude — archivos internos de desarrollo
+CLAUDE.md
+.claude/
+
+# Artefactos de empaquetado
+*.zip
+*.tar.gz
