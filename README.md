@@ -128,7 +128,7 @@ run_ui.py                   — entry point UI standalone
 
 ## Licencia
 
-GPL v3 — Copyright (C) 2026 Luis Raúl Heredia de la Cruz
+GPL v3 — Copyright (C) 2026 Luis Raúl Heredia de la Cruz ([@RaulH96](https://github.com/RaulH96))
 
 Libre para usar, modificar y distribuir. Cualquier distribución del código
 (modificado o no) debe mantener el código fuente abierto bajo la misma licencia.
