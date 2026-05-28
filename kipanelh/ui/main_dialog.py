@@ -1,9 +1,8 @@
 """
-Diálogo wxPython principal de la herramienta.
+Diálogo wxPython principal de KiPanelHome.
 
-Diseñado para ser usado tanto desde el CLI (standalone) como desde
-el plugin de KiCad. La diferencia entre ambos es solo el parent window
-y la pre-carga de la PCB actual cuando se llama desde el plugin.
+Soporta español e inglés. El idioma se cambia desde el panel "Acerca de"
+y persiste en un archivo de configuración del usuario.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -19,17 +18,26 @@ try:
 except ImportError:
     _WX_AVAILABLE = False
 
+from ..core.models import (
+    PanelizeRequest, PcbJob, LayerSelection, SheetConfig, OutputConfig,
+    TransferMethod, SheetSize, OutputFormat,
+)
+from ..core.methods import should_mirror
+from ..i18n import t, current_lang, set_lang
+
+# ID especial: señal para reconstruir el diálogo tras cambio de idioma
+_ID_LANG_CHANGED: int = -99
+
 
 def _open_file(path: Path) -> None:
-    """Abre un archivo con la aplicación predeterminada del sistema (multiplataforma)."""
+    """Abre un archivo con la aplicación predeterminada del sistema."""
     try:
         sys_name = platform.system()
         if sys_name == "Windows":
-            # cmd /c start es más confiable que os.startfile dentro del proceso de KiCad
             subprocess.Popen(
                 ["cmd", "/c", "start", "", str(path.resolve())],
                 shell=False,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW: sin ventana cmd parpadeante
+                creationflags=0x08000000,
             )
         elif sys_name == "Darwin":
             subprocess.Popen(["open", str(path)])
@@ -38,14 +46,8 @@ def _open_file(path: Path) -> None:
     except Exception:
         pass
 
-from ..core.models import (
-    PanelizeRequest, PcbJob, LayerSelection, SheetConfig, OutputConfig,
-    TransferMethod, SheetSize, OutputFormat,
-)
-from ..core.methods import should_mirror, describe_method
 
-
-# (nombre_capa, activa_por_defecto)
+# (layer_name, active_by_default)
 _LAYER_DEFS: list[tuple[str, bool]] = [
     ("F.Cu",    True),
     ("B.Cu",    True),
@@ -57,23 +59,23 @@ _LAYER_DEFS: list[tuple[str, bool]] = [
     ("B.Mask",  False),
 ]
 
-_METHODS: list[tuple[TransferMethod, str]] = [
-    (TransferMethod.TONER_TRANSFER, "Toner Transfer (planchado)"),
-    (TransferMethod.FILM_UV,        "Film UV"),
-    (TransferMethod.CUSTOM,         "Custom"),
-]
-
 _SHEET_SIZES: list[tuple[SheetSize, str]] = [
     (SheetSize.A4,     "A4"),
-    (SheetSize.LETTER, "Carta (Letter)"),
+    (SheetSize.LETTER, "sheet_letter"),  # clave i18n
     (SheetSize.A3,     "A3"),
-    (SheetSize.CUSTOM, "Personalizada"),
+    (SheetSize.CUSTOM, "sheet_custom"),  # clave i18n
+]
+
+_METHOD_KEYS: list[tuple[TransferMethod, str, str]] = [
+    (TransferMethod.TONER_TRANSFER, "method_toner",  "method_toner_desc"),
+    (TransferMethod.FILM_UV,        "method_film",   "method_film_desc"),
+    (TransferMethod.CUSTOM,         "method_custom", "method_custom_desc"),
 ]
 
 
 class KiPanelHomeDialog:
     """
-    Diálogo principal.
+    Diálogo principal. Soporta reconstrucción en caliente al cambiar idioma.
 
     Uso:
         dlg = KiPanelHomeDialog(parent=None, preloaded_pcb=Path(...))
@@ -97,36 +99,28 @@ class KiPanelHomeDialog:
         if preloaded_pcb is not None:
             self.pcb_jobs.append(PcbJob(path=preloaded_pcb, copies=1))
 
-        # Valor "auto" de copias: suma total de todas las PCBs.
         self._auto_total: int = sum(j.copies for j in self.pcb_jobs) or 1
 
-        # Carpeta de salida por defecto: junto a la PCB cargada, o Documentos
         if preloaded_pcb is not None:
             self._default_out = str(preloaded_pcb.parent / "kipanel_output")
         else:
             self._default_out = str(Path.home() / "Documents" / "kipanel_output")
 
-        # ── Widget refs ──────────────────────────────────────────────────────
-        self._pcb_list: "wx.ListCtrl | None" = None
+        self._reset_widget_refs()
 
-        # Capas: checkbox activo, checkbox espejado, spinbox copias, label auto
+    def _reset_widget_refs(self) -> None:
+        self._pcb_list: "wx.ListCtrl | None" = None
         self._layer_checks: dict[str, "wx.CheckBox"] = {}
         self._layer_mirror_checks: dict[str, "wx.CheckBox"] = {}
         self._layer_copies_spins: dict[str, "wx.SpinCtrl"] = {}
         self._layer_auto_labels: dict[str, "wx.StaticText"] = {}
-
         self._edge_cuts_check: "wx.CheckBox | None" = None
         self._combine_layers_check: "wx.CheckBox | None" = None
-
-        # Método
         self._method_radios: list["wx.RadioButton"] = []
         self._method_desc: "wx.StaticText | None" = None
         self._negative_check: "wx.CheckBox | None" = None
-        # Sub-panel Film UV (convención A/B)
         self._film_uv_panel: "wx.Panel | None" = None
-        self._film_uv_conv_radios: list["wx.RadioButton"] = []  # [0]=A, [1]=B
-
-        # Hoja
+        self._film_uv_conv_radios: list["wx.RadioButton"] = []
         self._sheet_choice: "wx.Choice | None" = None
         self._custom_size_panel: "wx.Panel | None" = None
         self._custom_w: "wx.SpinCtrlDouble | None" = None
@@ -134,15 +128,11 @@ class KiPanelHomeDialog:
         self._margin_spin: "wx.SpinCtrlDouble | None" = None
         self._spacing_spin: "wx.SpinCtrlDouble | None" = None
         self._rotation_check: "wx.CheckBox | None" = None
-
-        # Salida
         self._fmt_pdf: "wx.CheckBox | None" = None
         self._fmt_svg: "wx.CheckBox | None" = None
         self._fmt_png: "wx.CheckBox | None" = None
         self._dpi_spin: "wx.SpinCtrl | None" = None
         self._out_dir: "wx.DirPickerCtrl | None" = None
-
-        # Vista previa inline
         self._btn_prev_svg: "wx.Button | None" = None
         self._btn_prev_pdf: "wx.Button | None" = None
         self._preview_status: "wx.StaticText | None" = None
@@ -152,12 +142,18 @@ class KiPanelHomeDialog:
     # ─────────────────────────────────────────────────────────────────────────
 
     def show_modal(self) -> int:
-        self._dialog = self._build_dialog()
-        return self._dialog.ShowModal()
+        """Muestra el diálogo. Si se cambia el idioma, lo reconstruye automáticamente."""
+        while True:
+            self._reset_widget_refs()
+            self._dialog = self._build_dialog()
+            result = self._dialog.ShowModal()
+            self._dialog.Destroy()
+            self._dialog = None
+            if result != _ID_LANG_CHANGED:
+                return result
+            # Cambio de idioma: reabrir con strings nuevos
 
     def build_request(self) -> PanelizeRequest:
-        """Construye el PanelizeRequest leyendo el estado actual de los widgets."""
-        # Capas activas
         cu_layers: list[str] = []
         tech_layers: list[str] = []
         for name, _ in _LAYER_DEFS:
@@ -171,7 +167,6 @@ class KiPanelHomeDialog:
         edge_cuts = self._edge_cuts_check.IsChecked() if self._edge_cuts_check else True
         combine_layers = self._combine_layers_check.IsChecked() if self._combine_layers_check else False
 
-        # Espejado por capa: siempre desde los checkboxes de la UI
         all_active = cu_layers + tech_layers
         mirror_override: dict[str, bool] = {
             name: self._layer_mirror_checks[name].IsChecked()
@@ -179,22 +174,18 @@ class KiPanelHomeDialog:
             if name in self._layer_mirror_checks
         }
 
-        # Copias por capa: igual al auto_total → sin override; otro → override
         layer_copies_override: dict[str, int] = {}
         for name, spin in self._layer_copies_spins.items():
             val = spin.GetValue()
             if val > 0 and val != self._auto_total:
                 layer_copies_override[name] = val
 
-        # Método efectivo (incluye convención Film UV A/B)
         method = self._effective_method()
 
-        # Hoja
         sheet_idx = self._sheet_choice.GetSelection() if self._sheet_choice else 0
         sheet_size = _SHEET_SIZES[sheet_idx][0]
         is_custom_sheet = sheet_size == SheetSize.CUSTOM
 
-        # Formatos
         formats: list[OutputFormat] = []
         if self._fmt_pdf and self._fmt_pdf.IsChecked():
             formats.append(OutputFormat.PDF)
@@ -241,7 +232,7 @@ class KiPanelHomeDialog:
     def _build_dialog(self) -> "wx.Dialog":
         dlg = wx.Dialog(
             self.parent,
-            title="KiPanelHome",
+            title=t("dlg_title"),
             size=(800, 720),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
@@ -252,32 +243,34 @@ class KiPanelHomeDialog:
 
         p = self._scroll
         main_sizer = wx.BoxSizer(wx.VERTICAL)
-        # Orden: PCBs → Método → Capas → Hoja → Salida
         main_sizer.Add(self._build_pcb_section(p),    1, wx.EXPAND | wx.ALL, 6)
         main_sizer.Add(self._build_method_section(p),  0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         main_sizer.Add(self._build_layers_section(p),  0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         main_sizer.Add(self._build_sheet_section(p),   0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         main_sizer.Add(self._build_output_section(p),  0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
-
         self._scroll.SetSizer(main_sizer)
         self._scroll.FitInside()
 
-        # Botones: Vista previa inline + Generar + Cancelar
+        # Barra de botones inferior
         btn_row = wx.BoxSizer(wx.HORIZONTAL)
 
-        self._btn_prev_svg = wx.Button(dlg, label="Ver SVG ↗")
+        btn_about = wx.Button(dlg, label=t("btn_about"))
+        btn_about.Bind(wx.EVT_BUTTON, lambda _e: self._show_about(dlg))
+
+        self._btn_prev_svg = wx.Button(dlg, label=t("btn_preview_svg"))
         self._btn_prev_svg.Bind(wx.EVT_BUTTON, lambda _e: self._run_preview(OutputFormat.SVG))
 
-        self._btn_prev_pdf = wx.Button(dlg, label="Ver PDF ↗")
+        self._btn_prev_pdf = wx.Button(dlg, label=t("btn_preview_pdf"))
         self._btn_prev_pdf.Bind(wx.EVT_BUTTON, lambda _e: self._run_preview(OutputFormat.PDF))
 
         self._preview_status = wx.StaticText(dlg, label="")
         self._preview_status.SetForegroundColour(wx.Colour(100, 100, 100))
 
-        btn_ok = wx.Button(dlg, wx.ID_OK, label="Generar")
+        btn_ok = wx.Button(dlg, wx.ID_OK, label=t("btn_generate"))
         btn_ok.SetDefault()
-        btn_cancel = wx.Button(dlg, wx.ID_CANCEL, label="Cancelar")
+        btn_cancel = wx.Button(dlg, wx.ID_CANCEL, label=t("btn_cancel"))
 
+        btn_row.Add(btn_about, 0, wx.RIGHT, 10)
         btn_row.Add(self._btn_prev_svg, 0, wx.RIGHT, 4)
         btn_row.Add(self._btn_prev_pdf, 0, wx.RIGHT, 10)
         btn_row.Add(self._preview_status, 0, wx.ALIGN_CENTER_VERTICAL)
@@ -304,26 +297,26 @@ class KiPanelHomeDialog:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_pcb_section(self, p: "wx.Window") -> "wx.Sizer":
-        box = wx.StaticBox(p, label="PCBs a panelizar")
+        box = wx.StaticBox(p, label=t("sec_pcbs"))
         sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
         self._pcb_list = wx.ListCtrl(
             p, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
             size=(-1, 120),
         )
-        self._pcb_list.InsertColumn(0, "Archivo",  width=320)
-        self._pcb_list.InsertColumn(1, "Copias",   width=55)
-        self._pcb_list.InsertColumn(2, "Etiqueta", width=160)
+        self._pcb_list.InsertColumn(0, t("col_file"),   width=320)
+        self._pcb_list.InsertColumn(1, t("col_copies"), width=55)
+        self._pcb_list.InsertColumn(2, t("col_label"),  width=160)
         self._pcb_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_pcb_edit)
         sizer.Add(self._pcb_list, 1, wx.EXPAND | wx.ALL, 4)
 
         btn_row = wx.BoxSizer(wx.HORIZONTAL)
-        for label, handler in [
-            ("Agregar…",       self._on_pcb_add),
-            ("Eliminar",       self._on_pcb_remove),
-            ("Editar copias…", self._on_pcb_edit),
+        for key, handler in [
+            ("btn_add",    self._on_pcb_add),
+            ("btn_remove", self._on_pcb_remove),
+            ("btn_edit",   self._on_pcb_edit),
         ]:
-            btn = wx.Button(p, label=label)
+            btn = wx.Button(p, label=t(key))
             btn.Bind(wx.EVT_BUTTON, handler)
             btn_row.Add(btn, 0, wx.RIGHT, 4)
         sizer.Add(btn_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
@@ -339,17 +332,16 @@ class KiPanelHomeDialog:
             self._pcb_list.SetItem(i, 2, job.label or "")
 
         new_total = max(sum(j.copies for j in self.pcb_jobs), 1)
-        # Actualizar spinboxes que aún estén en el valor auto anterior
         for name, spin in self._layer_copies_spins.items():
             if spin.GetValue() == self._auto_total or spin.GetValue() == 0:
                 spin.SetValue(new_total)
         for lbl in self._layer_auto_labels.values():
-            lbl.SetLabel(f"(total: {new_total})")
+            lbl.SetLabel(t("total_label").format(new_total))
         self._auto_total = new_total
 
     def _on_pcb_add(self, _event) -> None:
         with wx.FileDialog(
-            self._dialog, "Seleccionar PCB",
+            self._dialog, t("btn_add"),
             wildcard="KiCad PCB (*.kicad_pcb)|*.kicad_pcb",
             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE,
         ) as fd:
@@ -375,14 +367,14 @@ class KiPanelHomeDialog:
             return
         job = self.pcb_jobs[idx]
 
-        with wx.Dialog(self._dialog, title=f"Editar: {job.path.name}", size=(310, 170)) as ed:
+        with wx.Dialog(self._dialog, title=job.path.name, size=(310, 170)) as ed:
             vs = wx.BoxSizer(wx.VERTICAL)
             gs = wx.FlexGridSizer(2, 2, 6, 8)
             gs.AddGrowableCol(1)
-            gs.Add(wx.StaticText(ed, label="Copias:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            gs.Add(wx.StaticText(ed, label=t("edit_copies")), 0, wx.ALIGN_CENTER_VERTICAL)
             spin = wx.SpinCtrl(ed, value=str(job.copies), min=1, max=99)
             gs.Add(spin, 0)
-            gs.Add(wx.StaticText(ed, label="Etiqueta:"), 0, wx.ALIGN_CENTER_VERTICAL)
+            gs.Add(wx.StaticText(ed, label=t("edit_label")), 0, wx.ALIGN_CENTER_VERTICAL)
             tc = wx.TextCtrl(ed, value=job.label or "")
             gs.Add(tc, 1, wx.EXPAND)
             vs.Add(gs, 0, wx.EXPAND | wx.ALL, 10)
@@ -397,75 +389,55 @@ class KiPanelHomeDialog:
                 self._refresh_pcb_list()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Sección 2: Método (antes que Capas — el método define los defaults de espejado)
+    # Sección 2: Método
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_method_section(self, p: "wx.Window") -> "wx.Sizer":
-        box = wx.StaticBox(p, label="Método de fabricación")
+        box = wx.StaticBox(p, label=t("sec_method"))
         sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
-        # Radios: Toner Transfer | Film UV | Custom
         radio_row = wx.BoxSizer(wx.HORIZONTAL)
-        for i, (_, label) in enumerate(_METHODS):
-            rb = wx.RadioButton(p, label=label, style=wx.RB_GROUP if i == 0 else 0)
+        for i, (_, label_key, _desc_key) in enumerate(_METHOD_KEYS):
+            rb = wx.RadioButton(p, label=t(label_key), style=wx.RB_GROUP if i == 0 else 0)
             rb.SetValue(i == 0)
             rb.Bind(wx.EVT_RADIOBUTTON, self._on_method_changed)
             self._method_radios.append(rb)
             radio_row.Add(rb, 0, wx.RIGHT, 16)
         sizer.Add(radio_row, 0, wx.ALL, 6)
 
-        # Descripción del método
-        self._method_desc = wx.StaticText(p, label=describe_method(TransferMethod.TONER_TRANSFER))
+        self._method_desc = wx.StaticText(p, label=t("method_toner_desc"))
         self._method_desc.SetForegroundColour(wx.Colour(90, 90, 90))
         sizer.Add(self._method_desc, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 6)
 
-        # ── Sub-panel Film UV (convención de contacto) ──────────────────────
+        # Sub-panel Film UV
         self._film_uv_panel = wx.Panel(p)
         fv_sizer = wx.StaticBoxSizer(
-            wx.StaticBox(self._film_uv_panel, label="Convención de contacto (Film UV)"),
+            wx.StaticBox(self._film_uv_panel, label=t("film_uv_box")),
             wx.VERTICAL,
         )
 
-        _FILM_UV_CONVS = [
-            (
-                TransferMethod.FILM_UV,
-                "Convención A — emulsión/tinta hacia el cobre  (recomendado)",
-                "El acetato se voltea boca-abajo: la tinta toca directamente la placa.\n"
-                "Mejor contacto, sin difracción. Espejado igual que Toner Transfer.",
-            ),
-            (
-                TransferMethod.FILM_UV_B,
-                "Convención B — emulsión/tinta hacia arriba",
-                "La cara limpia del acetato toca la placa; la tinta queda arriba.\n"
-                "Mayor difracción. Espejado opuesto: F.Cu normal, B.Cu espejada.",
-            ),
-        ]
-        for i, (conv_method, conv_label, conv_desc) in enumerate(_FILM_UV_CONVS):
+        for i, (label_key, desc_key) in enumerate([
+            ("film_a_label", "film_a_desc"),
+            ("film_b_label", "film_b_desc"),
+        ]):
             rb = wx.RadioButton(
-                self._film_uv_panel, label=conv_label,
+                self._film_uv_panel, label=t(label_key),
                 style=wx.RB_GROUP if i == 0 else 0,
             )
             rb.SetValue(i == 0)
             rb.Bind(wx.EVT_RADIOBUTTON, self._on_film_uv_conv_changed)
             self._film_uv_conv_radios.append(rb)
             fv_sizer.Add(rb, 0, wx.LEFT | wx.TOP, 6)
-            desc = wx.StaticText(self._film_uv_panel, label=conv_desc)
+            desc = wx.StaticText(self._film_uv_panel, label=t(desc_key))
             desc.SetForegroundColour(wx.Colour(100, 100, 100))
             fv_sizer.Add(desc, 0, wx.LEFT | wx.BOTTOM, 20)
 
-        # Opción negativo dentro del sub-panel Film UV
         neg_box = wx.BoxSizer(wx.HORIZONTAL)
-        self._negative_check = wx.CheckBox(
-            self._film_uv_panel,
-            label="Negativo (invertir colores: trazas blancas, fondo negro)",
-        )
+        self._negative_check = wx.CheckBox(self._film_uv_panel, label=t("negative_label"))
         self._negative_check.SetValue(False)
-        self._negative_check.SetToolTip(
-            "Activa solo si usas fotorresist NEGATIVO (poco común en casa).\n"
-            "Con fotorresist POSITIVO (el más común) deja esta opción desmarcada."
-        )
+        self._negative_check.SetToolTip(t("negative_tip"))
         neg_box.Add(self._negative_check, 0, wx.ALIGN_CENTER_VERTICAL)
-        neg_note = wx.StaticText(self._film_uv_panel, label="  ← para fotorresist negativo")
+        neg_note = wx.StaticText(self._film_uv_panel, label=t("negative_note"))
         neg_note.SetForegroundColour(wx.Colour(140, 100, 30))
         neg_box.Add(neg_note, 0, wx.ALIGN_CENTER_VERTICAL)
         fv_sizer.Add(neg_box, 0, wx.LEFT | wx.BOTTOM, 6)
@@ -473,62 +445,47 @@ class KiPanelHomeDialog:
         self._film_uv_panel.SetSizer(fv_sizer)
         self._film_uv_panel.Hide()
         sizer.Add(self._film_uv_panel, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 4)
-
         return sizer
 
     def _on_method_changed(self, _event) -> None:
         idx = next((i for i, r in enumerate(self._method_radios) if r.GetValue()), 0)
-        method = _METHODS[idx][0]
-        is_film_uv = method == TransferMethod.FILM_UV
+        desc_key = _METHOD_KEYS[idx][2]
+        is_film_uv = _METHOD_KEYS[idx][0] == TransferMethod.FILM_UV
 
         if self._method_desc:
-            self._method_desc.SetLabel(describe_method(method))
-
-        # Mostrar/ocultar sub-panel Film UV
+            self._method_desc.SetLabel(t(desc_key))
         if self._film_uv_panel:
             self._film_uv_panel.Show(is_film_uv)
-
-        # Actualizar checkboxes de espejado según método efectivo
-        effective = self._effective_method()
-        self._update_mirror_checks_for_method(effective)
-
-        # Auto-check negative for Film UV (usuario usa fotorresist negativo)
         if self._negative_check and is_film_uv:
             self._negative_check.SetValue(True)
+
+        self._update_mirror_checks_for_method(self._effective_method())
         self._relayout()
 
     def _on_film_uv_conv_changed(self, _event) -> None:
-        """Cambia la convención dentro de Film UV y actualiza el espejado."""
-        effective = self._effective_method()
-        self._update_mirror_checks_for_method(effective)
+        self._update_mirror_checks_for_method(self._effective_method())
 
     def _effective_method(self) -> TransferMethod:
-        """Devuelve el TransferMethod real, incluyendo la convención Film UV."""
         idx = next((i for i, r in enumerate(self._method_radios) if r.GetValue()), 0)
-        method = _METHODS[idx][0]
+        method = _METHOD_KEYS[idx][0]
         if method == TransferMethod.FILM_UV and self._film_uv_conv_radios:
-            # Radio 0 = Convención A (FILM_UV), Radio 1 = Convención B (FILM_UV_B)
             if len(self._film_uv_conv_radios) > 1 and self._film_uv_conv_radios[1].GetValue():
                 return TransferMethod.FILM_UV_B
         return method
 
     def _update_mirror_checks_for_method(self, method: TransferMethod) -> None:
-        """Actualiza los checkboxes de espejado con los defaults del método elegido."""
         dummy_sel = LayerSelection()
         for name, mir_cb in self._layer_mirror_checks.items():
-            mirror = should_mirror(name, method, dummy_sel)
-            mir_cb.SetValue(mirror)
+            mir_cb.SetValue(should_mirror(name, method, dummy_sel))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Sección 3: Capas
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_layers_section(self, p: "wx.Window") -> "wx.Sizer":
-        box = wx.StaticBox(p, label="Capas a procesar")
+        box = wx.StaticBox(p, label=t("sec_layers"))
         sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
-        # Grid: encabezado en la primera fila del mismo FlexGridSizer
-        # para garantizar alineación perfecta con las columnas de datos.
         grid = wx.FlexGridSizer(cols=4, vgap=3, hgap=8)
         grid.AddGrowableCol(0)
 
@@ -540,49 +497,41 @@ class KiPanelHomeDialog:
             st.SetForegroundColour(wx.Colour(80, 80, 80))
             return st
 
-        # Fila de encabezados (misma estructura que las filas de datos)
-        grid.Add(_hdr("Capa"),     0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
-        grid.Add(_hdr("Espejado"), 0, wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(_hdr("Copias"),   0, wx.ALIGN_CENTER_VERTICAL)
-        grid.Add(wx.StaticText(p, label=""), 0)  # columna de etiqueta, sin header
+        grid.Add(_hdr(t("hdr_layer")),  0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
+        grid.Add(_hdr(t("hdr_mirror")), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(_hdr(t("hdr_copies")), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(p, label=""), 0)
 
         for name, default in _LAYER_DEFS:
-            # Col 1: checkbox activo/inactivo
             cb = wx.CheckBox(p, label=name)
             cb.SetValue(default)
             self._layer_checks[name] = cb
             grid.Add(cb, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
 
-            # Col 2: checkbox de espejado
             mir = wx.CheckBox(p, label="")
             mir.SetValue(False)
             self._layer_mirror_checks[name] = mir
             grid.Add(mir, 0, wx.ALIGN_CENTER_VERTICAL)
 
-            # Col 3: spinbox de copias
             spin = wx.SpinCtrl(p, value=str(self._auto_total), min=1, max=999, size=(60, -1))
-            spin.SetToolTip("Copias de esta capa. Se sincroniza con el total de PCBs.")
+            spin.SetToolTip(t("layer_copies_tip"))
             self._layer_copies_spins[name] = spin
             grid.Add(spin, 0, wx.ALIGN_CENTER_VERTICAL)
 
-            # Col 4: etiqueta de referencia
-            lbl = wx.StaticText(p, label=f"(total: {self._auto_total})")
+            lbl = wx.StaticText(p, label=t("total_label").format(self._auto_total))
             lbl.SetForegroundColour(wx.Colour(130, 130, 130))
             self._layer_auto_labels[name] = lbl
             grid.Add(lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 2)
 
         sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 4)
 
-        self._edge_cuts_check = wx.CheckBox(p, label="Sobreponer Edge.Cuts en todas las capas (guía de corte)")
+        self._edge_cuts_check = wx.CheckBox(p, label=t("edge_cuts_overlay"))
         self._edge_cuts_check.SetValue(True)
         sizer.Add(self._edge_cuts_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
-        self._combine_layers_check = wx.CheckBox(p, label="Combinar todas las capas en la misma hoja")
+        self._combine_layers_check = wx.CheckBox(p, label=t("combine_layers"))
         self._combine_layers_check.SetValue(False)
-        self._combine_layers_check.SetToolTip(
-            "F.Cu, B.Cu, etc. se empacan juntas en una sola hoja "
-            "en lugar de generar una hoja separada por capa."
-        )
+        self._combine_layers_check.SetToolTip(t("combine_layers_tip"))
         sizer.Add(self._combine_layers_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         return sizer
 
@@ -591,49 +540,56 @@ class KiPanelHomeDialog:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_sheet_section(self, p: "wx.Window") -> "wx.Sizer":
-        box = wx.StaticBox(p, label="Hoja")
+        box = wx.StaticBox(p, label=t("sec_sheet"))
         sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
         row = wx.BoxSizer(wx.HORIZONTAL)
+        row.Add(wx.StaticText(p, label=t("sheet_size")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
 
-        row.Add(wx.StaticText(p, label="Tamaño:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
-        self._sheet_choice = wx.Choice(p, choices=[lbl for _, lbl in _SHEET_SIZES])
+        labels = []
+        for _, key in _SHEET_SIZES:
+            if key in ("A4", "A3"):
+                labels.append(key)
+            else:
+                labels.append(t(key))
+
+        self._sheet_choice = wx.Choice(p, choices=labels)
         self._sheet_choice.SetSelection(0)
         self._sheet_choice.Bind(wx.EVT_CHOICE, self._on_sheet_changed)
         row.Add(self._sheet_choice, 0, wx.RIGHT, 20)
 
-        row.Add(wx.StaticText(p, label="Margen:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        row.Add(wx.StaticText(p, label=t("sheet_margin")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._margin_spin = wx.SpinCtrlDouble(p, value="5.0", min=0.0, max=50.0, inc=0.5)
         self._margin_spin.SetDigits(1)
         self._margin_spin.SetMinSize(wx.Size(72, -1))
         row.Add(self._margin_spin, 0, wx.RIGHT, 2)
-        row.Add(wx.StaticText(p, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        row.Add(wx.StaticText(p, label=t("sheet_mm")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
 
-        row.Add(wx.StaticText(p, label="Separación:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        row.Add(wx.StaticText(p, label=t("sheet_spacing")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._spacing_spin = wx.SpinCtrlDouble(p, value="3.0", min=0.0, max=30.0, inc=0.5)
         self._spacing_spin.SetDigits(1)
         self._spacing_spin.SetMinSize(wx.Size(72, -1))
         row.Add(self._spacing_spin, 0, wx.RIGHT, 2)
-        row.Add(wx.StaticText(p, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL)
+        row.Add(wx.StaticText(p, label=t("sheet_mm")), 0, wx.ALIGN_CENTER_VERTICAL)
         sizer.Add(row, 0, wx.ALL, 6)
 
         self._custom_size_panel = wx.Panel(p)
         cs = wx.BoxSizer(wx.HORIZONTAL)
-        cs.Add(wx.StaticText(self._custom_size_panel, label="Ancho:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        cs.Add(wx.StaticText(self._custom_size_panel, label=t("sheet_width")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._custom_w = wx.SpinCtrlDouble(self._custom_size_panel, value="210.0", min=50.0, max=1200.0, inc=1.0)
         self._custom_w.SetDigits(1)
         cs.Add(self._custom_w, 0, wx.RIGHT, 2)
-        cs.Add(wx.StaticText(self._custom_size_panel, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
-        cs.Add(wx.StaticText(self._custom_size_panel, label="Alto:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+        cs.Add(wx.StaticText(self._custom_size_panel, label=t("sheet_mm")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        cs.Add(wx.StaticText(self._custom_size_panel, label=t("sheet_height")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
         self._custom_h = wx.SpinCtrlDouble(self._custom_size_panel, value="297.0", min=50.0, max=1200.0, inc=1.0)
         self._custom_h.SetDigits(1)
         cs.Add(self._custom_h, 0, wx.RIGHT, 2)
-        cs.Add(wx.StaticText(self._custom_size_panel, label="mm"), 0, wx.ALIGN_CENTER_VERTICAL)
+        cs.Add(wx.StaticText(self._custom_size_panel, label=t("sheet_mm")), 0, wx.ALIGN_CENTER_VERTICAL)
         self._custom_size_panel.SetSizer(cs)
         self._custom_size_panel.Hide()
         sizer.Add(self._custom_size_panel, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
-        self._rotation_check = wx.CheckBox(p, label="Permitir rotación de PCBs para mejor aprovechamiento")
+        self._rotation_check = wx.CheckBox(p, label=t("sheet_rotation"))
         self._rotation_check.SetValue(True)
         sizer.Add(self._rotation_check, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
         return sizer
@@ -650,7 +606,7 @@ class KiPanelHomeDialog:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_output_section(self, p: "wx.Window") -> "wx.Sizer":
-        box = wx.StaticBox(p, label="Salida")
+        box = wx.StaticBox(p, label=t("sec_output"))
         sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
         fmt_row = wx.BoxSizer(wx.HORIZONTAL)
@@ -670,15 +626,15 @@ class KiPanelHomeDialog:
         fmt_row.Add(self._fmt_svg, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
         fmt_row.Add(self._fmt_png, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         fmt_row.Add(self._dpi_spin, 0, wx.RIGHT, 4)
-        fmt_row.Add(wx.StaticText(p, label="DPI"), 0, wx.ALIGN_CENTER_VERTICAL)
+        fmt_row.Add(wx.StaticText(p, label=t("out_dpi")), 0, wx.ALIGN_CENTER_VERTICAL)
         sizer.Add(fmt_row, 0, wx.ALL, 6)
 
         dir_row = wx.BoxSizer(wx.HORIZONTAL)
-        dir_row.Add(wx.StaticText(p, label="Carpeta:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        dir_row.Add(wx.StaticText(p, label=t("out_folder")), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
         self._out_dir = wx.DirPickerCtrl(
             p,
             path=self._default_out,
-            message="Seleccionar carpeta de salida",
+            message=t("folder_picker_msg"),
             style=wx.DIRP_USE_TEXTCTRL | wx.DIRP_SMALL,
         )
         dir_row.Add(self._out_dir, 1, wx.EXPAND)
@@ -690,48 +646,149 @@ class KiPanelHomeDialog:
             self._dpi_spin.Enable(self._fmt_png.IsChecked())
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Panel "Acerca de"
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _show_about(self, parent: "wx.Window") -> None:
+        dlg = wx.Dialog(parent, title=t("about_title"), size=(420, 420),
+                        style=wx.DEFAULT_DIALOG_STYLE)
+        dlg.SetMinSize(wx.Size(380, 380))
+
+        vs = wx.BoxSizer(wx.VERTICAL)
+
+        # ── Icono + nombre ──────────────────────────────────────────────────
+        icon_path = Path(__file__).parent.parent / "icon.png"
+        top_row = wx.BoxSizer(wx.HORIZONTAL)
+
+        if icon_path.exists():
+            img = wx.Image(str(icon_path), wx.BITMAP_TYPE_PNG)
+            img = img.Scale(80, 80, wx.IMAGE_QUALITY_HIGH)
+            bmp = wx.StaticBitmap(dlg, bitmap=wx.Bitmap(img))
+            top_row.Add(bmp, 0, wx.ALL, 10)
+
+        name_col = wx.BoxSizer(wx.VERTICAL)
+        title_lbl = wx.StaticText(dlg, label="KiPanelHome")
+        title_font = title_lbl.GetFont()
+        title_font.SetPointSize(title_font.GetPointSize() + 4)
+        title_font.MakeBold()
+        title_lbl.SetFont(title_font)
+        name_col.Add(title_lbl, 0, wx.TOP, 14)
+
+        ver_lbl = wx.StaticText(dlg, label=t("about_version"))
+        ver_lbl.SetForegroundColour(wx.Colour(100, 100, 100))
+        name_col.Add(ver_lbl, 0, wx.TOP, 4)
+
+        desc_lbl = wx.StaticText(dlg, label=t("about_desc"))
+        desc_lbl.SetForegroundColour(wx.Colour(80, 80, 80))
+        name_col.Add(desc_lbl, 0, wx.TOP, 8)
+
+        top_row.Add(name_col, 1, wx.EXPAND | wx.RIGHT, 10)
+        vs.Add(top_row, 0, wx.EXPAND)
+
+        vs.Add(wx.StaticLine(dlg), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        # ── Info ────────────────────────────────────────────────────────────
+        grid = wx.FlexGridSizer(3, 2, 6, 10)
+        grid.AddGrowableCol(1)
+
+        def _lbl(text: str, bold: bool = False) -> "wx.StaticText":
+            st = wx.StaticText(dlg, label=text)
+            if bold:
+                f = st.GetFont(); f.MakeBold(); st.SetFont(f)
+            return st
+
+        grid.Add(_lbl(t("about_author"), bold=True), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(_lbl("Luis Raúl Heredia de la Cruz"), 0, wx.ALIGN_CENTER_VERTICAL)
+
+        grid.Add(_lbl(t("about_license"), bold=True), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(_lbl("GPL v3"), 0, wx.ALIGN_CENTER_VERTICAL)
+
+        grid.Add(_lbl(t("about_github"), bold=True), 0, wx.ALIGN_CENTER_VERTICAL)
+        try:
+            link = wx.adv.HyperlinkCtrl(
+                dlg, label="github.com/RaulH96/KiPanelHome",
+                url="https://github.com/RaulH96/KiPanelHome",
+            )
+            grid.Add(link, 0, wx.ALIGN_CENTER_VERTICAL)
+        except Exception:
+            grid.Add(_lbl("github.com/RaulH96/KiPanelHome"), 0)
+
+        vs.Add(grid, 0, wx.EXPAND | wx.ALL, 14)
+
+        vs.Add(wx.StaticLine(dlg), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+
+        # ── Selector de idioma ───────────────────────────────────────────────
+        lang_lbl = wx.StaticText(dlg, label=t("about_lang"))
+        lang_font = lang_lbl.GetFont(); lang_font.MakeBold(); lang_lbl.SetFont(lang_font)
+        vs.Add(lang_lbl, 0, wx.LEFT | wx.TOP, 14)
+
+        lang_row = wx.BoxSizer(wx.HORIZONTAL)
+        rb_es = wx.RadioButton(dlg, label="Español", style=wx.RB_GROUP)
+        rb_en = wx.RadioButton(dlg, label="English")
+        rb_es.SetValue(current_lang() == "es")
+        rb_en.SetValue(current_lang() == "en")
+        lang_row.Add(rb_es, 0, wx.RIGHT, 20)
+        lang_row.Add(rb_en, 0)
+        vs.Add(lang_row, 0, wx.LEFT | wx.TOP | wx.BOTTOM, 14)
+
+        vs.AddStretchSpacer()
+
+        # ── Botón cerrar ────────────────────────────────────────────────────
+        btn_close = wx.Button(dlg, wx.ID_OK, label=t("btn_close"))
+        btn_close.SetDefault()
+        vs.Add(btn_close, 0, wx.ALIGN_CENTER | wx.BOTTOM, 12)
+
+        dlg.SetSizer(vs)
+        dlg.ShowModal()
+
+        # Aplicar idioma si cambió
+        new_lang = "en" if rb_en.GetValue() else "es"
+        dlg.Destroy()
+
+        if new_lang != current_lang():
+            set_lang(new_lang)
+            # Señalizar al show_modal() que reconstruya el diálogo
+            if self._dialog:
+                self._dialog.EndModal(_ID_LANG_CHANGED)
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Vista previa inline
     # ─────────────────────────────────────────────────────────────────────────
 
     def _run_preview(self, fmt: "OutputFormat") -> None:
-        """Genera en carpeta temporal y abre el archivo con el visor del sistema."""
         try:
             req = self.build_request()
         except Exception as exc:
-            wx.MessageBox(str(exc), "Error en configuración", wx.OK | wx.ICON_ERROR, self._dialog)
+            wx.MessageBox(str(exc), t("err_config"), wx.OK | wx.ICON_ERROR, self._dialog)
             return
 
         if not req.pcbs:
-            wx.MessageBox("Agrega al menos una PCB.", "Sin PCBs", wx.OK | wx.ICON_WARNING, self._dialog)
+            wx.MessageBox(t("warn_no_pcbs"), t("warn_no_pcbs_title"), wx.OK | wx.ICON_WARNING, self._dialog)
             return
 
         is_svg = fmt == OutputFormat.SVG
         btn = self._btn_prev_svg if is_svg else self._btn_prev_pdf
-        orig_label = "Ver SVG ↗" if is_svg else "Ver PDF ↗"
+        orig_label = t("btn_preview_svg") if is_svg else t("btn_preview_pdf")
 
         if btn:
-            btn.SetLabel("Generando…")
+            btn.SetLabel(t("prev_generating").split("…")[0] + "…")
             btn.Enable(False)
         if self._preview_status:
-            self._preview_status.SetLabel("Generando vista previa…")
+            self._preview_status.SetLabel(t("prev_generating"))
 
         def run_thread() -> None:
             try:
-                import pcbnew  # noqa: F401 — falla rápido si no está disponible
+                import pcbnew  # noqa: F401
             except ImportError:
                 def _err():
                     if btn: btn.SetLabel(orig_label); btn.Enable(True)
                     if self._preview_status: self._preview_status.SetLabel("")
-                    wx.MessageBox(
-                        "pcbnew no disponible.\nEjecuta desde el plugin de KiCad.",
-                        "Error", wx.OK | wx.ICON_ERROR, self._dialog,
-                    )
+                    wx.MessageBox(t("err_no_pcbnew"), t("err_title"), wx.OK | wx.ICON_ERROR, self._dialog)
                 wx.CallAfter(_err)
                 return
 
             try:
                 from ..core.orchestrator import run
-
                 tmp = tempfile.mkdtemp(prefix="kipanel_preview_")
                 preview_req = PanelizeRequest(
                     pcbs=req.pcbs,
@@ -758,7 +815,7 @@ class KiPanelHomeDialog:
                     if btn: btn.SetLabel(orig_label); btn.Enable(True)
                     if self._preview_status:
                         self._preview_status.SetLabel(
-                            f"Listo: {len(paths)} archivo(s)." if paths else "Sin archivos generados."
+                            t("prev_ready").format(len(paths)) if paths else t("prev_none")
                         )
                     for fp in paths:
                         _open_file(fp)
@@ -768,8 +825,8 @@ class KiPanelHomeDialog:
             except Exception as exc:
                 def _err2() -> None:
                     if btn: btn.SetLabel(orig_label); btn.Enable(True)
-                    if self._preview_status: self._preview_status.SetLabel("Error.")
-                    wx.MessageBox(str(exc), "Error en vista previa", wx.OK | wx.ICON_ERROR, self._dialog)
+                    if self._preview_status: self._preview_status.SetLabel(t("prev_error"))
+                    wx.MessageBox(str(exc), t("err_preview"), wx.OK | wx.ICON_ERROR, self._dialog)
                 wx.CallAfter(_err2)
 
         threading.Thread(target=run_thread, daemon=True).start()

@@ -31,7 +31,7 @@ if _PCBNEW_AVAILABLE:
                 "casera (planchado / film UV)."
             )
             self.show_toolbar_button = True
-            # self.icon_file_name = str(Path(__file__).parent / "icon.png")
+            self.icon_file_name = str(Path(__file__).parent.parent / "icon.png")
 
         def Run(self) -> None:
             # Importar wxPython y la UI solo en runtime para que el módulo
